@@ -81,12 +81,31 @@ internal fun RunLogPanel(
     onClear: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var essentialOnly by rememberSaveable { mutableStateOf(true) }
+    var activeFilter by rememberSaveable { mutableStateOf(com.aliothmoon.maafw.runner.RunLogFilter.Progress) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var searchVisible by rememberSaveable { mutableStateOf(false) }
+
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+
     val snapshot = entries()
-    val visible = if (essentialOnly) snapshot.progress else snapshot.all
+    val baseList = when (activeFilter) {
+        com.aliothmoon.maafw.runner.RunLogFilter.Progress -> snapshot.progress
+        else -> snapshot.all
+    }
+    val visible = remember(baseList, activeFilter, searchQuery) {
+        val query = searchQuery.trim().lowercase()
+        baseList.filter { entry ->
+            if (!entry.kind.matchesFilter(activeFilter)) return@filter false
+            if (query.isEmpty()) return@filter true
+            val textMatch = entry.text.asString().lowercase().contains(query)
+            val detailMatch = entry.detail?.lowercase()?.contains(query) == true
+            textMatch || detailMatch
+        }
+    }
     // 原始行因限额丢过时，在最老一条保留下来的原始行前面插一句，免得以为日志断档是 bug
-    val omittedAt = remember(snapshot, essentialOnly) {
-        if (essentialOnly || snapshot.omittedRaw <= 0) {
+    val omittedAt = remember(snapshot, activeFilter) {
+        if (activeFilter == com.aliothmoon.maafw.runner.RunLogFilter.Progress || snapshot.omittedRaw <= 0) {
             -1
         } else {
             visible.indexOfFirst { it.id == snapshot.firstRawId }
@@ -103,14 +122,24 @@ internal fun RunLogPanel(
             horizontalArrangement = Arrangement.spacedBy(MaaDesignTokens.Spacing.xs),
         ) {
             MaaChoiceChip(
+                label = stringResource(R.string.run_log_filter_focus),
+                selected = activeFilter == com.aliothmoon.maafw.runner.RunLogFilter.Focus,
+                onClick = { activeFilter = com.aliothmoon.maafw.runner.RunLogFilter.Focus },
+            )
+            MaaChoiceChip(
                 label = stringResource(R.string.run_log_filter_progress),
-                selected = essentialOnly,
-                onClick = { essentialOnly = true },
+                selected = activeFilter == com.aliothmoon.maafw.runner.RunLogFilter.Progress,
+                onClick = { activeFilter = com.aliothmoon.maafw.runner.RunLogFilter.Progress },
+            )
+            MaaChoiceChip(
+                label = stringResource(R.string.run_log_filter_troubleshoot),
+                selected = activeFilter == com.aliothmoon.maafw.runner.RunLogFilter.Troubleshoot,
+                onClick = { activeFilter = com.aliothmoon.maafw.runner.RunLogFilter.Troubleshoot },
             )
             MaaChoiceChip(
                 label = stringResource(R.string.run_log_filter_all),
-                selected = !essentialOnly,
-                onClick = { essentialOnly = false },
+                selected = activeFilter == com.aliothmoon.maafw.runner.RunLogFilter.All,
+                onClick = { activeFilter = com.aliothmoon.maafw.runner.RunLogFilter.All },
             )
             Text(
                 text = pluralStringResource(R.plurals.run_log_count, visible.size, visible.size),
@@ -118,12 +147,67 @@ internal fun RunLogPanel(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
+            // 搜索开关按钮
+            androidx.compose.material3.IconButton(
+                onClick = {
+                    searchVisible = !searchVisible
+                    if (!searchVisible) searchQuery = ""
+                },
+            ) {
+                Icon(
+                    imageVector = if (searchVisible) com.aliothmoon.maafw.theme.MaaIcons.Close else com.aliothmoon.maafw.theme.MaaIcons.Search,
+                    contentDescription = stringResource(R.string.run_log_search_placeholder),
+                    tint = if (searchVisible || searchQuery.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            LogToolbarAction(
+                stringResource(R.string.run_log_copy_summary),
+                enabled = visible.isNotEmpty(),
+                onClick = {
+                    val summary = buildString {
+                        val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
+                        for (entry in visible) {
+                            append("[").append(fmt.format(Date(entry.atMillis))).append("] ")
+                            append(entry.text.asString()).append("\n")
+                        }
+                    }
+                    clipboard.setText(AnnotatedString(summary))
+                    android.widget.Toast.makeText(
+                        context,
+                        context.getString(R.string.run_log_copied),
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                },
+            )
             LogToolbarAction(stringResource(R.string.run_log_export), enabled = true, onClick = onExport)
             LogToolbarAction(
                 stringResource(R.string.run_log_clear),
                 enabled = snapshot.all.isNotEmpty(),
                 onClick = onClear,
             )
+        }
+
+        if (searchVisible) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = MaaDesignTokens.Spacing.xxs),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(MaaDesignTokens.Spacing.xs),
+            ) {
+                com.aliothmoon.maafw.ui.components.AdaptiveTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text(stringResource(R.string.run_log_search_placeholder)) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                if (searchQuery.isNotEmpty()) {
+                    androidx.compose.material3.TextButton(onClick = { searchQuery = "" }) {
+                        Text(stringResource(R.string.common_clear))
+                    }
+                }
+            }
         }
 
         if (visible.isEmpty()) {
@@ -169,7 +253,7 @@ internal fun RunLogPanel(
             if (following) listState.scrollToItem(lastItemIndex)
         }
         // 切档是换了一份列表，停在旧档的位置没有意义，直接回到底部接着跟
-        LaunchedEffect(essentialOnly) {
+        LaunchedEffect(activeFilter) {
             following = true
             listState.scrollToItem(lastItemIndex)
         }
